@@ -100,12 +100,13 @@ class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
         }
 
         // Za sada: dummy data (da UI radi odmah)
-        loadDummyComments()
+//        loadDummyComments()
 
         // Klikovi: trenutno samo placeholder (posle ćemo ubaciti fetch + AI)
         fetchButton.addActionListener {
             // TODO: u sledećem koraku GitHub fetch (u background thread-u)
             loadDummyComments()
+
         }
         resolveButton.addActionListener {
             // TODO: u sledećem koraku OpenAI poziv + dobijanje patch-a
