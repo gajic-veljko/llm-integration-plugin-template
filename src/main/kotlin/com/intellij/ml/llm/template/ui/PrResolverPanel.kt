@@ -1,6 +1,14 @@
 package com.intellij.ml.llm.template.ui
 
 import com.intellij.ml.llm.template.models.PrComment
+import com.intellij.ml.llm.template.models.PrCommentStatus
+import com.intellij.ml.llm.template.services.*
+import com.intellij.ml.llm.template.settings.LLMSettingsManager
+import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.progress.ProgressIndicator
+import com.intellij.openapi.progress.ProgressManager
+import com.intellij.openapi.progress.Task
 import com.intellij.openapi.project.Project
 import com.intellij.ui.CollectionListModel
 import com.intellij.ui.ColoredListCellRenderer
@@ -10,13 +18,16 @@ import com.intellij.ui.components.*
 import java.awt.BorderLayout
 import java.awt.FlowLayout
 import javax.swing.JButton
+import javax.swing.JOptionPane
 import javax.swing.JPanel
 import javax.swing.ListSelectionModel
 
 class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
 
-    private val repoField = JBTextField("owner/repo")
-    private val prField = JBTextField("123") // za sada string, posle validacija
+    private val logger = Logger.getInstance(PrResolverPanel::class.java)
+
+    private val repoField = JBTextField("cupacdj/JDBC-project")
+    private val prField = JBTextField("1") // za sada string, posle validacija
     private val fetchButton = JButton("Fetch comments")
     private val resolveButton = JButton("Resolve selected")
     private val previewButton = JButton("Preview diff")
@@ -29,6 +40,10 @@ class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
         lineWrap = true
         wrapStyleWord = true
     }
+
+    // Store fetched data
+    private var currentSnapshot: PrSnapshot? = null
+    private var currentAnalysis: String? = null
 
     init {
         // TOP bar
@@ -92,7 +107,18 @@ class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
                         appendLine("Location: ${selected.filePath}:${selected.line}")
                     }
                     appendLine()
-                    append(selected.body)
+                    appendLine("Comment:")
+                    appendLine(selected.body)
+
+                    // Show code snippet if available
+                    if (selected.codeSnippet != null) {
+                        appendLine()
+                        appendLine("=".repeat(60))
+                        appendLine("Code Snippet:")
+                        appendLine("=".repeat(60))
+                        appendLine(selected.codeSnippet.text)
+                        appendLine("=".repeat(60))
+                    }
                 }
                 resolveButton.isEnabled = true
                 previewButton.isEnabled = true
@@ -102,17 +128,194 @@ class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
         // Za sada: dummy data (da UI radi odmah)
 //        loadDummyComments()
 
-        // Klikovi: trenutno samo placeholder (posle ćemo ubaciti fetch + AI)
+        // Klikovi: currentno samo placeholder (posle ćemo ubaciti fetch + AI)
         fetchButton.addActionListener {
-            // TODO: u sledećem koraku GitHub fetch (u background thread-u)
-            loadDummyComments()
+            val repoText = repoField.text.trim()
+            val prText = prField.text.trim()
 
+            // Parse repo
+            val parts = repoText.split("/")
+            if (parts.size != 2) {
+                JOptionPane.showMessageDialog(this, "Invalid repo format. Use: owner/repo", "Error", JOptionPane.ERROR_MESSAGE)
+                return@addActionListener
+            }
+            val owner = parts[0]
+            val repo = parts[1]
+
+            // Parse PR number
+            val prNumber = prText.toIntOrNull()
+            if (prNumber == null || prNumber <= 0) {
+                JOptionPane.showMessageDialog(this, "Invalid PR number", "Error", JOptionPane.ERROR_MESSAGE)
+                return@addActionListener
+            }
+
+            // Get GitHub token from settings (optional for public repos)
+            val githubToken = System.getenv("GITHUB_TOKEN") // You can also add this to settings
+
+            // Run in background
+            ProgressManager.getInstance().run(object : Task.Backgroundable(project, "Fetching PR Comments from GitHub", true) {
+                override fun run(indicator: ProgressIndicator) {
+                    indicator.text = "Fetching PR #$prNumber from $owner/$repo..."
+
+                    try {
+                        val fetcher = GitHubService(githubToken)
+                        val snapshot = fetcher.fetchPrSnapshot(owner, repo, prNumber, snippetContextLines = 3)
+
+                        // Store snapshot
+                        currentSnapshot = snapshot
+
+                        // Update UI on EDT
+                        ApplicationManager.getApplication().invokeLater {
+                            loadCommentsFromSnapshot(snapshot)
+                            JOptionPane.showMessageDialog(
+                                this@PrResolverPanel,
+                                "Fetched ${snapshot.inlineComments.size} inline comments and ${snapshot.discussionComments.size} discussion comments",
+                                "Success",
+                                JOptionPane.INFORMATION_MESSAGE
+                            )
+                        }
+                    } catch (e: Exception) {
+                        logger.error("Failed to fetch PR comments", e)
+                        ApplicationManager.getApplication().invokeLater {
+                            JOptionPane.showMessageDialog(
+                                this@PrResolverPanel,
+                                "Failed to fetch: ${e.message}",
+                                "Error",
+                                JOptionPane.ERROR_MESSAGE
+                            )
+                        }
+                    }
+                }
+            })
         }
         resolveButton.addActionListener {
-            // TODO: u sledećem koraku OpenAI poziv + dobijanje patch-a
+            val snapshot = currentSnapshot
+            if (snapshot == null) {
+                JOptionPane.showMessageDialog(this, "Please fetch PR comments first", "Error", JOptionPane.ERROR_MESSAGE)
+                return@addActionListener
+            }
+
+            val selectedComment = commentsList.selectedValue
+            if (selectedComment == null) {
+                JOptionPane.showMessageDialog(this, "Please select a comment", "Error", JOptionPane.ERROR_MESSAGE)
+                return@addActionListener
+            }
+
+            // Get OpenAI API key from settings
+            val settingsManager = LLMSettingsManager.getInstance()
+            val openAiKey = settingsManager.getOpenAiKey()
+
+            if (openAiKey.isBlank()) {
+                JOptionPane.showMessageDialog(
+                    this,
+                    "Please configure OpenAI API key in Settings",
+                    "Error",
+                    JOptionPane.ERROR_MESSAGE
+                )
+                return@addActionListener
+            }
+
+            // Run in background
+            ProgressManager.getInstance().run(object : Task.Backgroundable(project, "Analyzing PR with AI", true) {
+                override fun run(indicator: ProgressIndicator) {
+                    indicator.text = "Calling OpenAI API..."
+
+                    try {
+                        val openAi = OpenAiService(openAiKey)
+                        val analysis = openAi.analyzePrSnapshot(
+                            snapshot = snapshot,
+                            model = "gpt-4o",
+                            userPrompt = "Focus on resolving this comment: '${selectedComment.body}' at ${selectedComment.filePath}:${selectedComment.line}. Give me exact required changes with file and line ranges."
+                        )
+
+                        // Store analysis
+                        currentAnalysis = analysis
+
+                        // Update UI on EDT
+                        ApplicationManager.getApplication().invokeLater {
+                            detailsArea.text = buildString {
+                                appendLine("=== AI ANALYSIS ===")
+                                appendLine()
+                                appendLine("Comment: ${selectedComment.body}")
+                                appendLine("Author: ${selectedComment.author}")
+                                appendLine("Location: ${selectedComment.filePath}:${selectedComment.line}")
+
+                                // Show code snippet if available
+                                if (selectedComment.codeSnippet != null) {
+                                    appendLine()
+                                    appendLine("=".repeat(60))
+                                    appendLine("Code Snippet:")
+                                    appendLine("=".repeat(60))
+                                    appendLine(selectedComment.codeSnippet.text)
+                                    appendLine("=".repeat(60))
+                                }
+
+                                appendLine()
+                                appendLine("=== Suggested Resolution ===")
+                                appendLine()
+                                append(analysis)
+                            }
+                        }
+                    } catch (e: Exception) {
+                        logger.error("Failed to analyze PR with OpenAI", e)
+                        ApplicationManager.getApplication().invokeLater {
+                            JOptionPane.showMessageDialog(
+                                this@PrResolverPanel,
+                                "Failed to analyze: ${e.message}",
+                                "Error",
+                                JOptionPane.ERROR_MESSAGE
+                            )
+                        }
+                    }
+                }
+            })
         }
         previewButton.addActionListener {
             // TODO: u sledećem koraku Diff viewer
+        }
+    }
+
+    private fun loadCommentsFromSnapshot(snapshot: PrSnapshot) {
+        listModel.removeAll()
+
+        // Add discussion comments
+        snapshot.discussionComments.forEach { comment ->
+            listModel.add(
+                PrComment(
+                    id = comment.id,
+                    author = comment.user ?: "unknown",
+                    body = comment.body ?: "",
+                    filePath = null,
+                    line = null,
+                    status = PrCommentStatus.OPEN
+                )
+            )
+        }
+
+        // Add inline review comments
+        snapshot.inlineComments.forEach { comment ->
+            listModel.add(
+                PrComment(
+                    id = comment.id,
+                    author = comment.user ?: "unknown",
+                    body = comment.body ?: "",
+                    filePath = comment.path,
+                    line = comment.line,
+                    status = PrCommentStatus.OPEN,
+                    codeSnippet = if (comment.snippet != null) {
+                        com.intellij.ml.llm.template.models.CodeSnippet(
+                            text = comment.snippet,
+                            startLine = comment.startLine,
+                            endLine = comment.line
+                        )
+                    } else null
+                )
+            )
+        }
+
+        // Select first item if available
+        if (!listModel.isEmpty) {
+            commentsList.setSelectedIndex(0)
         }
     }
 

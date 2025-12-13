@@ -1,10 +1,9 @@
-package com.intellij.ml.llm.template.models
+package com.intellij.ml.llm.template.github
 
 enum class PrCommentStatus {
     OPEN,
     RESOLVED,
-    OUTDATED,
-    REQUESTED_CHANGES
+    OUTDATED
 }
 
 data class CodeSnippet(
