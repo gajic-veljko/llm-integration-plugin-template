@@ -14,14 +14,13 @@ import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.Task
 import com.intellij.openapi.project.Project
-import com.intellij.openapi.ui.DialogWrapper
 import com.intellij.ui.CollectionListModel
 import com.intellij.ui.ColoredListCellRenderer
 import com.intellij.ui.EditorTextField
 import com.intellij.ui.JBColor
-import com.intellij.ui.JBSplitter
 import com.intellij.ui.SimpleTextAttributes
 import com.intellij.ui.components.*
+import com.intellij.util.ui.AsyncProcessIcon
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import java.awt.*
@@ -48,11 +47,11 @@ class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
         val CARD_BORDER = JBColor(Color(0xE0E0E0), Color(0x515151))
         val AI_SECTION_BG = JBColor(Color(0xE3F2FD), Color(0x1E3A5F))
 
-        // DARKER resize visuals
         val DIVIDER_COLOR = JBColor(Color(0x909090), Color(0x2B2B2B))
         val SECTION_BORDER = JBColor(Color(0xB0B0B0), Color(0x3A3A3A))
     }
 
+    // ---- Top bar ----
     private val repoField = JBTextField("cupacdj/JDBC-project").apply {
         columns = 22
         border = JBUI.Borders.empty(4)
@@ -66,21 +65,23 @@ class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
 
     private val fetchButton = createStyledButton("Fetch Comments", AllIcons.Actions.Refresh)
     private val resolveButton = createStyledButton("Resolve with AI", AllIcons.Actions.Lightning)
-    private val filterComboBox = JComboBox(CommentFilter.values()).apply {
-        border = JBUI.Borders.empty(2)
-    }
+    private val filterComboBox = JComboBox(CommentFilter.values()).apply { border = JBUI.Borders.empty(2) }
 
+    // ---- Left list ----
     private val listModel = CollectionListModel<PrComment>()
     private val commentsList = JBList(listModel)
     private var allComments = mutableListOf<PrComment>()
 
-    // ---- Right panel UI ----
+    // ---- Right panel ----
     private val detailsPanel = JPanel(BorderLayout())
 
-    // Comment text
     private val commentBodyArea = createStyledTextArea()
+    private val commentScroll = JBScrollPane(commentBodyArea).apply {
+        border = JBUI.Borders.customLine(CARD_BORDER, 1)
+        verticalScrollBarPolicy = ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED
+        horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
+    }
 
-    // Code context
     private val codeContextWrapper = JPanel(BorderLayout())
     private var codeEditorField: EditorTextField? = null
     private val codeLineInfoLabel = JLabel("", AllIcons.General.Information, SwingConstants.LEFT).apply {
@@ -90,44 +91,32 @@ class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
         isVisible = false
     }
 
-    // AI output (hidden until resolve)
     private val aiTextArea = createStyledTextArea().apply { background = AI_SECTION_BG }
+    private val aiTextScroll = JBScrollPane(aiTextArea).apply {
+        border = JBUI.Borders.empty()
+        background = AI_SECTION_BG
+        verticalScrollBarPolicy = ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED
+        horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
+    }
     private var aiCodeEditorField: EditorTextField? = null
 
-    // Splitters (drag to resize)
-    private lateinit var topSplitter: JBSplitter      // comment <-> code
-    private lateinit var aiSplitter: JBSplitter       // ai text <-> ai code
-    private lateinit var detailsSplitter: JBSplitter  // top <-> ai
+    // ---- Fixed sections + expand ----
+    private lateinit var detailsCards: JPanel
+    private lateinit var normalSectionsContainer: JPanel
+    private lateinit var normalScroll: JBScrollPane
+    private lateinit var expandedWrapper: JPanel
+    private lateinit var expandedScroll: JBScrollPane
 
     private lateinit var commentSection: JPanel
     private lateinit var codeSection: JPanel
-    private lateinit var aiSectionContainer: JComponent // will be either emptyAiPanel or aiSplitter
+    private lateinit var aiTextSection: JPanel
+    private lateinit var aiCodeSection: JPanel
 
-
-    // Placeholder when AI hidden
-    private val emptyAiPanel = JPanel(BorderLayout()).apply {
-        isOpaque = false
-        add(
-            JLabel("Press “Resolve with AI” to show the AI solution.", AllIcons.General.Information, SwingConstants.LEFT)
-                .apply {
-                    border = JBUI.Borders.empty(8)
-                    foreground = JBColor.GRAY
-                },
-            BorderLayout.NORTH
-        )
-    }
-
-    // Fullscreen button (top-left of right panel)
-    private val fullScreenButton = JButton("Fullscreen", AllIcons.Actions.Expandall).apply {
-        toolTipText = "Open selected comment / code / AI result in a fullscreen window"
-        isFocusPainted = false
-        isOpaque = true
-        border = CompoundBorder(
-            JBUI.Borders.customLine(SECTION_BORDER, 1),
-            JBUI.Borders.empty(4, 10)
-        )
-        cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-    }
+    private var expandedSection: JPanel? = null
+    private var expandedOriginalIndex: Int = -1
+    private val sectionExpandButtons = mutableMapOf<JPanel, JButton>()
+    private val sectionFixedHeights = mutableMapOf<JPanel, Int>()
+    private val sectionContent = mutableMapOf<JPanel, JPanel>()
 
     // Data
     private var currentSnapshot: PrSnapshot? = null
@@ -138,7 +127,6 @@ class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
         border = JBUI.Borders.empty(8)
 
         add(createTopBarWrapping(), BorderLayout.NORTH)
-
         setupCommentsList()
 
         val left = JBScrollPane(commentsList).apply {
@@ -157,7 +145,7 @@ class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
             )
         }
 
-        val mainSplitter = JBSplitter(false, 0.35f).apply {
+        val mainSplitter = com.intellij.ui.JBSplitter(false, 0.35f).apply {
             firstComponent = left
             secondComponent = right
             dividerWidth = 6
@@ -167,12 +155,11 @@ class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
         add(mainSplitter, BorderLayout.CENTER)
 
         resolveButton.isEnabled = false
-
         setupListeners()
         hideAiSection()
     }
 
-    // ---- TOP BAR (wraps on resize, no overlap) ----
+    // ---- TOP BAR ----
     private fun createTopBarWrapping(): JPanel {
         return JPanel(WrapLayout(FlowLayout.LEFT, 8, 6)).apply {
             background = HEADER_BG
@@ -251,9 +238,7 @@ class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
                         value.filePath!!.substringAfterLast('/'),
                         SimpleTextAttributes(SimpleTextAttributes.STYLE_ITALIC, LOCATION_COLOR)
                     )
-                    if (value.line != null) {
-                        append(":${value.line}", SimpleTextAttributes(SimpleTextAttributes.STYLE_PLAIN, LOCATION_COLOR))
-                    }
+                    if (value.line != null) append(":${value.line}", SimpleTextAttributes(SimpleTextAttributes.STYLE_PLAIN, LOCATION_COLOR))
                 }
 
                 append("\n", SimpleTextAttributes.REGULAR_ATTRIBUTES)
@@ -264,133 +249,204 @@ class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
         }
     }
 
-    // ---- DETAILS PANEL (no top author/header at all) ----
+    // ---- Right side sections (fixed heights) ----
     private fun setupDetailsPanel() {
         detailsPanel.background = UIUtil.getPanelBackground()
         detailsPanel.border = JBUI.Borders.empty(8)
 
-        // Small toolbar on the right panel (top-left) with fullscreen
-        val detailsToolbar = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
+        normalSectionsContainer = JPanel().apply {
             isOpaque = false
-            border = JBUI.Borders.empty(6, 6, 6, 6)
-            add(fullScreenButton)
+            layout = BoxLayout(this, BoxLayout.Y_AXIS)
+            border = JBUI.Borders.empty(6)
         }
 
-        // Comment section
-        commentSection = createSection("Comment", AllIcons.Nodes.Tag).apply {
-            border = CompoundBorder(
-                JBUI.Borders.customLine(SECTION_BORDER, 1),
-                JBUI.Borders.empty(6)
-            )
-            add(JBScrollPane(commentBodyArea).apply {
-                border = JBUI.Borders.customLine(CARD_BORDER, 1)
-            }, BorderLayout.CENTER)
+        fun fixedHeight(section: JPanel, height: Int) {
+            sectionFixedHeights[section] = height
+            section.maximumSize = Dimension(Int.MAX_VALUE, height)
+            section.preferredSize = Dimension(0, height)
+            section.minimumSize = Dimension(0, height)
         }
 
-        // Code section
-        codeSection = createSection("Code Context", AllIcons.Nodes.Class).apply {
-            border = CompoundBorder(
-                JBUI.Borders.customLine(SECTION_BORDER, 1),
-                JBUI.Borders.empty(6)
-            )
+        commentSection = createSectionWithExpand("Comment", AllIcons.Nodes.Tag) { toggleExpand(commentSection) }
+        fixedHeight(commentSection, 190)
+        sectionContent[commentSection]!!.apply {
+            border = JBUI.Borders.customLine(CARD_BORDER, 1)
+            add(commentScroll, BorderLayout.CENTER)
+        }
+
+        codeSection = createSectionWithExpand("Code Context", AllIcons.Nodes.Class) { toggleExpand(codeSection) }
+        fixedHeight(codeSection, 250)
+        sectionContent[codeSection]!!.apply {
+            border = JBUI.Borders.customLine(CARD_BORDER, 1)
             add(codeContextWrapper, BorderLayout.CENTER)
-            add(codeLineInfoLabel, BorderLayout.SOUTH)
         }
+        codeSection.add(codeLineInfoLabel, BorderLayout.SOUTH)
         setCodeContext(null, null, null)
 
-        // Resizable: Comment <-> Code
-        topSplitter = JBSplitter(true, 0.52f).apply {
-            firstComponent = commentSection
-            secondComponent = codeSection
-            dividerWidth = 8
-            border = JBUI.Borders.customLine(DIVIDER_COLOR, 1)
-            background = DIVIDER_COLOR
-        }
-
-        val topPanel = JPanel(BorderLayout()).apply {
-            isOpaque = false
-            add(detailsToolbar, BorderLayout.NORTH)
-            add(topSplitter, BorderLayout.CENTER)
-        }
-
-        // AI text panel
-        val aiTextPanel = createSection("AI Analysis", AllIcons.Actions.Lightning).apply {
+        aiTextSection = createSectionWithExpand("AI Analysis", AllIcons.Actions.Lightning) { toggleExpand(aiTextSection) }
+        fixedHeight(aiTextSection, 240)
+        sectionContent[aiTextSection]!!.apply {
+            background = AI_SECTION_BG
             border = CompoundBorder(
-                JBUI.Borders.customLine(SECTION_BORDER, 1),
-                JBUI.Borders.empty(6)
+                JBUI.Borders.customLine(JBColor(Color(0x1976D2), Color(0x42A5F5)), 2),
+                JBUI.Borders.empty(8)
             )
 
-            val aiInnerPanel = JPanel(BorderLayout()).apply {
+            val aiHeader = JPanel(FlowLayout(FlowLayout.LEFT)).apply {
                 background = AI_SECTION_BG
-                border = CompoundBorder(
-                    JBUI.Borders.customLine(JBColor(Color(0x1976D2), Color(0x42A5F5)), 2),
-                    JBUI.Borders.empty(8)
-                )
-
-                val aiHeader = JPanel(FlowLayout(FlowLayout.LEFT)).apply {
-                    background = AI_SECTION_BG
-                    add(JLabel(AllIcons.General.Information))
-                    add(JLabel("AI-Generated Resolution").apply {
-                        font = font.deriveFont(Font.BOLD, 14f)
-                        foreground = JBColor(Color(0x1565C0), Color(0x90CAF9))
-                    })
-                }
-                add(aiHeader, BorderLayout.NORTH)
-
-                add(JBScrollPane(aiTextArea).apply {
-                    border = JBUI.Borders.empty()
-                    background = AI_SECTION_BG
-                }, BorderLayout.CENTER)
+                add(JLabel(AllIcons.General.Information))
+                add(JLabel("AI-Generated Resolution").apply {
+                    font = font.deriveFont(Font.BOLD, 14f)
+                    foreground = JBColor(Color(0x1565C0), Color(0x90CAF9))
+                })
             }
-
-            add(aiInnerPanel, BorderLayout.CENTER)
+            add(aiHeader, BorderLayout.NORTH)
+            add(aiTextScroll, BorderLayout.CENTER)
         }
 
-        // AI code panel
-        val aiCodePanel = createSection("AI Proposed Code", AllIcons.FileTypes.Text).apply {
-            border = CompoundBorder(
-                JBUI.Borders.customLine(SECTION_BORDER, 1),
-                JBUI.Borders.empty(6)
-            )
-            add(JLabel("No code block extracted.", SwingConstants.LEFT).apply {
-                border = JBUI.Borders.empty(6)
-                foreground = JBColor.GRAY
-            }, BorderLayout.CENTER)
+        aiCodeSection = createSectionWithExpand("AI Proposed Code", AllIcons.FileTypes.Text) { toggleExpand(aiCodeSection) }
+        fixedHeight(aiCodeSection, 260)
+        setAiCode(null, null)
+
+        // Normal order
+        normalSectionsContainer.add(commentSection)
+        normalSectionsContainer.add(codeSection)
+        normalSectionsContainer.add(aiTextSection)
+        normalSectionsContainer.add(aiCodeSection)
+
+        // One outer scroll for the right panel (sections can exceed window height)
+        normalScroll = JBScrollPane(normalSectionsContainer).apply {
+            border = JBUI.Borders.empty()
+            verticalScrollBarPolicy = ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED
+            horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
         }
 
-        // Resizable: AI text <-> AI code
-        aiSplitter = JBSplitter(true, 0.6f).apply {
-            firstComponent = aiTextPanel
-            secondComponent = aiCodePanel
-            dividerWidth = 8
-            border = JBUI.Borders.customLine(DIVIDER_COLOR, 1)
-            background = DIVIDER_COLOR
+        // Expanded view
+        expandedWrapper = JPanel(BorderLayout()).apply {
+            isOpaque = false
+            border = JBUI.Borders.empty(6)
+        }
+        expandedScroll = JBScrollPane(expandedWrapper).apply {
+            border = JBUI.Borders.empty()
+            verticalScrollBarPolicy = ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED
+            horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
         }
 
-        // Resizable: top <-> AI
-        detailsSplitter = JBSplitter(true, 0.72f).apply {
-            firstComponent = topPanel
-            secondComponent = emptyAiPanel
-            dividerWidth = 8
-            border = JBUI.Borders.customLine(DIVIDER_COLOR, 1)
-            background = DIVIDER_COLOR
+        detailsCards = JPanel(CardLayout()).apply {
+            isOpaque = false
+            add(normalScroll, "NORMAL")
+            add(expandedScroll, "EXPANDED")
         }
 
         detailsPanel.removeAll()
-        detailsPanel.add(detailsSplitter, BorderLayout.CENTER)
+        detailsPanel.add(detailsCards, BorderLayout.CENTER)
+
+        // IMPORTANT: AI hidden by default (only appears after Resolve)
+        aiTextSection.isVisible = false
+        aiCodeSection.isVisible = false
     }
 
-    private fun createSection(title: String, icon: Icon): JPanel {
-        return JPanel(BorderLayout()).apply {
+    private fun createSectionWithExpand(title: String, icon: Icon, onToggle: () -> Unit): JPanel {
+        val section = JPanel(BorderLayout()).apply {
             background = UIUtil.getPanelBackground()
-            val titleLabel = JLabel(title, icon, SwingConstants.LEFT).apply {
-                font = font.deriveFont(Font.BOLD, 14f)
-                border = JBUI.Borders.empty(0, 0, 4, 0)
-            }
-            add(titleLabel, BorderLayout.NORTH)
+            border = CompoundBorder(
+                JBUI.Borders.customLine(SECTION_BORDER, 1),
+                JBUI.Borders.empty(6)
+            )
         }
+
+        val titleLabel = JLabel(title, icon, SwingConstants.LEFT).apply {
+            font = font.deriveFont(Font.BOLD, 14f)
+        }
+
+        val expandBtn = JButton(AllIcons.Actions.Expandall).apply {
+            toolTipText = "Expand / collapse"
+            isFocusPainted = false
+            isOpaque = false
+            border = JBUI.Borders.empty(2, 6)
+            cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+            addActionListener { onToggle() }
+        }
+        sectionExpandButtons[section] = expandBtn
+
+        val header = JPanel(BorderLayout()).apply {
+            isOpaque = false
+            border = JBUI.Borders.empty(0, 0, 4, 0)
+            add(titleLabel, BorderLayout.WEST)
+            add(expandBtn, BorderLayout.EAST)
+        }
+
+        val content = JPanel(BorderLayout()).apply {
+            isOpaque = true
+            background = UIUtil.getPanelBackground()
+        }
+        sectionContent[section] = content
+
+        section.add(header, BorderLayout.NORTH)
+        section.add(content, BorderLayout.CENTER)
+        return section
     }
 
+    private fun toggleExpand(section: JPanel) {
+        if (!section.isVisible) return
+        if (expandedSection == section) collapseExpanded() else expandSection(section)
+    }
+
+    private fun expandSection(section: JPanel) {
+        if (expandedSection != null) collapseExpanded()
+
+        val parent = section.parent ?: return
+        expandedOriginalIndex = parent.components.indexOf(section)
+
+        parent.remove(section)
+        parent.revalidate()
+        parent.repaint()
+
+        // Let it grow
+        section.maximumSize = Dimension(Int.MAX_VALUE, Int.MAX_VALUE)
+        section.preferredSize = Dimension(0, 900)
+        section.minimumSize = Dimension(0, 250)
+
+        expandedWrapper.removeAll()
+        expandedWrapper.add(section, BorderLayout.CENTER)
+
+        (detailsCards.layout as CardLayout).show(detailsCards, "EXPANDED")
+
+        sectionExpandButtons[section]?.icon = AllIcons.Actions.Collapseall
+        expandedSection = section
+    }
+
+    private fun collapseExpanded() {
+        val section = expandedSection ?: return
+
+        expandedWrapper.remove(section)
+
+        // Restore fixed height
+        sectionFixedHeights[section]?.let { h ->
+            section.maximumSize = Dimension(Int.MAX_VALUE, h)
+            section.preferredSize = Dimension(0, h)
+            section.minimumSize = Dimension(0, h)
+        }
+
+        val idx = expandedOriginalIndex.takeIf { it >= 0 } ?: normalSectionsContainer.componentCount
+        normalSectionsContainer.add(section, idx.coerceAtMost(normalSectionsContainer.componentCount))
+
+        normalSectionsContainer.revalidate()
+        normalSectionsContainer.repaint()
+
+        (detailsCards.layout as CardLayout).show(detailsCards, "NORMAL")
+
+        sectionExpandButtons[section]?.icon = AllIcons.Actions.Expandall
+        expandedSection = null
+        expandedOriginalIndex = -1
+    }
+
+    private fun collapseExpandedIfHiddenNow() {
+        val section = expandedSection ?: return
+        if (!section.isVisible) collapseExpanded()
+    }
+
+    // ---- Code Editor ----
     private fun createCodeEditor(code: String, filePathHint: String?): EditorTextField {
         val fileType = if (filePathHint != null) {
             val extension = filePathHint.substringAfterLast('.', "txt")
@@ -401,10 +457,7 @@ class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
 
         return EditorTextField(code, project, fileType).apply {
             setOneLineMode(false)
-            border = CompoundBorder(
-                JBUI.Borders.customLine(CARD_BORDER, 1),
-                JBUI.Borders.empty(4)
-            )
+            border = JBUI.Borders.empty(4)
 
             addSettingsProvider { editor ->
                 (editor as? EditorEx)?.apply {
@@ -413,76 +466,14 @@ class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
                     settings.isWhitespacesShown = false
                     settings.isFoldingOutlineShown = true
                     colorsScheme = EditorColorsManager.getInstance().globalScheme
-                    setHorizontalScrollbarVisible(true)
+
+                    // allow scrolling in editor itself
                     setVerticalScrollbarVisible(true)
+                    setHorizontalScrollbarVisible(true)
                 }
             }
         }
     }
-
-    private fun setupListeners() {
-        commentsList.addListSelectionListener {
-            val selected = commentsList.selectedValue
-            if (selected == null) clearDetails() else showCommentDetails(selected)
-        }
-
-        filterComboBox.addActionListener { applyFilter() }
-        fetchButton.addActionListener { fetchPrComments() }
-        resolveButton.addActionListener { resolveWithAi() }
-
-        fullScreenButton.addActionListener {
-            val selected = commentsList.selectedValue
-            val dialog = FullScreenViewerDialog(
-                commentText = commentBodyArea.text,
-                codeText = codeEditorField?.text ?: "",
-                codeFileHint = selected?.filePath,
-                aiText = aiTextArea.text,
-                aiCodeText = aiCodeEditorField?.text ?: "",
-                aiCodeFileHint = selected?.filePath
-            )
-            dialog.show()
-        }
-    }
-
-    private fun clearDetails() {
-        commentBodyArea.text = ""
-        setCodeContext(null, null, null)
-        hideAiSection()
-
-        resolveButton.isEnabled = false
-
-        detailsPanel.revalidate()
-        detailsPanel.repaint()
-    }
-
-    private fun showCommentDetails(comment: PrComment) {
-        commentBodyArea.text = comment.body
-
-        val isInline = comment.filePath != null
-
-        if (!isInline) {
-            // Discussion comment: show only comment
-            setCodeContext(null, null, null)
-            showDiscussionLayout()
-            return
-        }
-
-        // Inline comment: show comment + code, AI hidden until resolve button pressed
-        showInlineLayout()
-
-        if (comment.codeSnippet != null) {
-            setCodeContext(
-                code = comment.codeSnippet.text,
-                filePathHint = comment.filePath,
-                lineInfo = "Lines ${comment.codeSnippet.startLine} - ${comment.codeSnippet.endLine}"
-            )
-        } else {
-            setCodeContext(null, null, null)
-        }
-
-        resolveButton.isEnabled = true
-    }
-
 
     private fun setCodeContext(code: String?, filePathHint: String?, lineInfo: String?) {
         codeContextWrapper.removeAll()
@@ -509,19 +500,89 @@ class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
         codeContextWrapper.repaint()
     }
 
+    // ---- Listeners ----
+    private fun setupListeners() {
+        commentsList.addListSelectionListener {
+            val selected = commentsList.selectedValue
+            if (selected == null) clearDetails() else showCommentDetails(selected)
+        }
+
+        filterComboBox.addActionListener { applyFilter() }
+        fetchButton.addActionListener { fetchPrComments() }
+        resolveButton.addActionListener { resolveWithAi() }
+    }
+
+    private fun clearDetails() {
+        commentBodyArea.text = ""
+        setCodeContext(null, null, null)
+        hideAiSection()
+        resolveButton.isEnabled = false
+        collapseExpandedIfHiddenNow()
+    }
+
+    private fun showCommentDetails(comment: PrComment) {
+        commentBodyArea.text = comment.body
+
+        val isInline = comment.filePath != null
+        if (!isInline) {
+            // Discussion: hide code + hide AI entirely
+            setCodeContext(null, null, null)
+            showDiscussionLayout()
+            return
+        }
+
+        // Inline: show comment + code, but AI hidden until Resolve
+        showInlineLayout()
+
+        if (comment.codeSnippet != null) {
+            setCodeContext(
+                code = comment.codeSnippet.text,
+                filePathHint = comment.filePath,
+                lineInfo = "Lines ${comment.codeSnippet.startLine} - ${comment.codeSnippet.endLine}"
+            )
+        } else setCodeContext(null, null, null)
+
+        resolveButton.isEnabled = true
+    }
+
+    private fun showDiscussionLayout() {
+        commentSection.isVisible = true
+        codeSection.isVisible = false
+        // Hide AI completely for discussion comments
+        aiTextSection.isVisible = false
+        aiCodeSection.isVisible = false
+        currentAnalysis = null
+        aiTextArea.text = ""
+        setAiCode(null, null)
+
+        resolveButton.isEnabled = false
+        collapseExpandedIfHiddenNow()
+    }
+
+    private fun showInlineLayout() {
+        commentSection.isVisible = true
+        codeSection.isVisible = true
+        hideAiSection()
+        collapseExpandedIfHiddenNow()
+    }
+
     // ---- AI show/hide ----
     private fun hideAiSection() {
         currentAnalysis = null
         aiTextArea.text = ""
         setAiCode(null, null)
 
-        detailsSplitter.secondComponent = emptyAiPanel
-        detailsSplitter.proportion = 1.0f
+        // IMPORTANT: no placeholder - just hide AI sections completely
+        aiTextSection.isVisible = false
+        aiCodeSection.isVisible = false
+
+        collapseExpandedIfHiddenNow()
     }
 
     private fun showAiSection() {
-        detailsSplitter.secondComponent = aiSplitter
-        detailsSplitter.proportion = 0.72f
+        aiTextSection.isVisible = true
+        aiCodeSection.isVisible = true
+        collapseExpandedIfHiddenNow()
     }
 
     private fun setAiOutput(text: String, codeBlock: String?, codeFilePathHint: String?) {
@@ -531,52 +592,27 @@ class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
     }
 
     private fun setAiCode(codeBlock: String?, codeFilePathHint: String?) {
-        val aiCodePanel = aiSplitter.secondComponent as? JPanel ?: return
-        aiCodePanel.removeAll()
+        val content = sectionContent[aiCodeSection] ?: return
+        content.removeAll()
+        content.border = JBUI.Borders.customLine(CARD_BORDER, 1)
 
         if (codeBlock.isNullOrBlank()) {
-            aiCodePanel.add(
+            content.add(
                 JLabel("No code block extracted.", SwingConstants.LEFT).apply {
                     border = JBUI.Borders.empty(6)
                     foreground = JBColor.GRAY
                 },
-                BorderLayout.CENTER
+                BorderLayout.NORTH
             )
             aiCodeEditorField = null
         } else {
             val editor = createCodeEditor(codeBlock, codeFilePathHint)
             aiCodeEditorField = editor
-            aiCodePanel.add(editor, BorderLayout.CENTER)
+            content.add(editor, BorderLayout.CENTER)
         }
 
-        aiCodePanel.revalidate()
-        aiCodePanel.repaint()
-    }
-
-    private fun showDiscussionLayout() {
-        // Only comment section visible
-        topSplitter.firstComponent = commentSection
-        topSplitter.secondComponent = JPanel() // empty
-        topSplitter.proportion = 1.0f
-
-        hideAiSection() // also ensures AI area is empty
-        resolveButton.isEnabled = false
-
-        detailsPanel.revalidate()
-        detailsPanel.repaint()
-    }
-
-    private fun showInlineLayout() {
-        // Comment + code section visible
-        topSplitter.firstComponent = commentSection
-        topSplitter.secondComponent = codeSection
-        topSplitter.proportion = 0.52f
-
-        // AI remains hidden until user presses resolve
-        hideAiSection()
-
-        detailsPanel.revalidate()
-        detailsPanel.repaint()
+        content.revalidate()
+        content.repaint()
     }
 
     private fun extractFirstCodeBlock(markdown: String): Pair<String?, String?> {
@@ -591,7 +627,48 @@ class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
         return lang to code
     }
 
-    // ---- Fetch / Resolve ----
+    // ---- Loading popup (spinner) ----
+    private fun showLoadingPopup(message: String): JDialog {
+        val owner = SwingUtilities.getWindowAncestor(this)
+        val dialog = JDialog(owner).apply {
+            isUndecorated = true
+            isModal = false
+            setAlwaysOnTop(true)
+        }
+
+        val spinner = AsyncProcessIcon("loading")
+        val label = JLabel(message).apply { border = JBUI.Borders.empty(0, 8, 0, 0) }
+
+        val panel = JPanel(BorderLayout()).apply {
+            border = CompoundBorder(
+                JBUI.Borders.customLine(CARD_BORDER, 1),
+                JBUI.Borders.empty(10)
+            )
+            background = UIUtil.getPanelBackground()
+            add(spinner, BorderLayout.WEST)
+            add(label, BorderLayout.CENTER)
+        }
+
+        dialog.contentPane = panel
+        dialog.pack()
+
+        // center on owner
+        val loc = owner?.locationOnScreen
+        val size = owner?.size
+        if (loc != null && size != null) {
+            dialog.setLocation(
+                loc.x + (size.width - dialog.width) / 2,
+                loc.y + (size.height - dialog.height) / 2
+            )
+        } else {
+            dialog.setLocationRelativeTo(null)
+        }
+
+        dialog.isVisible = true
+        return dialog
+    }
+
+    // ---- Fetch / Resolve (with spinner popup) ----
     private fun fetchPrComments() {
         val repoText = repoField.text.trim()
         val prText = prField.text.trim()
@@ -611,6 +688,11 @@ class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
         }
 
         val githubToken = System.getenv("GITHUB_TOKEN")
+
+        // show popup loader + disable buttons
+        fetchButton.isEnabled = false
+        resolveButton.isEnabled = false
+        val loading = showLoadingPopup("Fetching PR comments from GitHub...")
 
         ProgressManager.getInstance().run(object : Task.Backgroundable(project, "Fetching PR Comments", true) {
             override fun run(indicator: ProgressIndicator) {
@@ -632,9 +714,17 @@ class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
                     }
                 } catch (e: Exception) {
                     logger.error("Failed to fetch PR comments", e)
-                    ApplicationManager.getApplication().invokeLater {
-                        showError("Failed to fetch: ${e.message}")
-                    }
+                    ApplicationManager.getApplication().invokeLater { showError("Failed to fetch: ${e.message}") }
+                }
+            }
+
+            override fun onFinished() {
+                ApplicationManager.getApplication().invokeLater {
+                    loading.dispose()
+                    fetchButton.isEnabled = true
+                    // resolve enabled only if inline selected
+                    val selected = commentsList.selectedValue
+                    resolveButton.isEnabled = selected?.filePath != null
                 }
             }
         })
@@ -662,6 +752,11 @@ class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
             return
         }
 
+        // show popup loader + disable buttons
+        resolveButton.isEnabled = false
+        fetchButton.isEnabled = false
+        val loading = showLoadingPopup("Analyzing with OpenAI...")
+
         ProgressManager.getInstance().run(object : Task.Backgroundable(project, "Analyzing with AI", true) {
             override fun run(indicator: ProgressIndicator) {
                 indicator.text = "Calling OpenAI API..."
@@ -688,9 +783,17 @@ class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
                     }
                 } catch (e: Exception) {
                     logger.error("Failed to analyze PR with OpenAI", e)
-                    ApplicationManager.getApplication().invokeLater {
-                        showError("Failed to analyze: ${e.message}")
-                    }
+                    ApplicationManager.getApplication().invokeLater { showError("Failed to analyze: ${e.message}") }
+                }
+            }
+
+            override fun onFinished() {
+                ApplicationManager.getApplication().invokeLater {
+                    loading.dispose()
+                    fetchButton.isEnabled = true
+                    // still inline? then allow resolve again
+                    val selected = commentsList.selectedValue
+                    resolveButton.isEnabled = selected?.filePath != null
                 }
             }
         })
@@ -760,83 +863,6 @@ class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
         }
     }
 
-    // ---- Fullscreen viewer dialog ----
-    private inner class FullScreenViewerDialog(
-
-        private val commentText: String,
-        private val codeText: String,
-        private val codeFileHint: String?,
-        private val aiText: String,
-        private val aiCodeText: String,
-        private val aiCodeFileHint: String?
-    ) : DialogWrapper(this@PrResolverPanel.project) {
-
-        init {
-            title = "Fullscreen Viewer"
-            setResizable(true)
-            init()
-        }
-
-        override fun createCenterPanel(): JComponent {
-            val tabs = JTabbedPane()
-
-            tabs.addTab("Comment", JBScrollPane(JBTextArea(commentText).apply {
-                isEditable = false
-                lineWrap = true
-                wrapStyleWord = true
-                border = JBUI.Borders.empty(10)
-            }))
-
-            tabs.addTab("Code Context", createEditorPanel(this@PrResolverPanel.project, codeText, codeFileHint, emptyText = "No code context."))
-
-            tabs.addTab("AI Analysis", JBScrollPane(JBTextArea(aiText).apply {
-                isEditable = false
-                lineWrap = true
-                wrapStyleWord = true
-                border = JBUI.Borders.empty(10)
-            }))
-
-            tabs.addTab("AI Code", createEditorPanel(this@PrResolverPanel.project, aiCodeText, aiCodeFileHint, emptyText = "No AI code extracted."))
-
-            return tabs
-        }
-
-        private fun createEditorPanel(project: Project, text: String, fileHint: String?, emptyText: String): JComponent {
-            if (text.isBlank()) {
-                return JPanel(BorderLayout()).apply {
-                    add(JLabel(emptyText).apply { border = JBUI.Borders.empty(12) }, BorderLayout.NORTH)
-                }
-            }
-
-            val fileType = if (fileHint != null) {
-                val ext = fileHint.substringAfterLast('.', "txt")
-                FileTypeManager.getInstance().getFileTypeByExtension(ext)
-            } else {
-                FileTypeManager.getInstance().getFileTypeByExtension("txt")
-            }
-
-            val editor = EditorTextField(text, project, fileType).apply {
-                setOneLineMode(false)
-                addSettingsProvider { e ->
-                    (e as? EditorEx)?.apply {
-                        isViewer = true
-                        settings.isLineNumbersShown = true
-                        colorsScheme = EditorColorsManager.getInstance().globalScheme
-                        setHorizontalScrollbarVisible(true)
-                        setVerticalScrollbarVisible(true)
-                    }
-                }
-            }
-
-            return JPanel(BorderLayout()).apply {
-                border = JBUI.Borders.empty(8)
-                add(editor, BorderLayout.CENTER)
-            }
-        }
-    }
-
-
-
     /**
      * WrapLayout: FlowLayout that wraps items to the next line instead of overlapping.
      */
@@ -847,6 +873,7 @@ class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
     ) : FlowLayout(align, hgap, vgap) {
 
         override fun preferredLayoutSize(target: Container): Dimension = layoutSize(target, preferred = true)
+
         override fun minimumLayoutSize(target: Container): Dimension {
             val minimum = layoutSize(target, preferred = false)
             minimum.width -= hgap + 1
