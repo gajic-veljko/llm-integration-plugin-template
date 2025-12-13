@@ -322,7 +322,7 @@ class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
     private fun loadCommentsFromSnapshot(snapshot: PrSnapshot) {
         allComments.clear()
 
-        // Add discussion comments
+        // Add discussion comments first
         snapshot.discussionComments.forEach { comment ->
             allComments.add(
                 PrComment(
@@ -336,26 +336,35 @@ class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
             )
         }
 
-        // Add inline review comments
-        snapshot.inlineComments.forEach { comment ->
-            allComments.add(
-                PrComment(
-                    id = comment.id,
-                    author = comment.user ?: "unknown",
-                    body = comment.body ?: "",
-                    filePath = comment.path,
-                    line = comment.line,
-                    status = PrCommentStatus.OPEN,
-                    codeSnippet = if (comment.snippet != null) {
-                        com.intellij.ml.llm.template.models.CodeSnippet(
-                            text = comment.snippet,
-                            startLine = comment.startLine,
-                            endLine = comment.line
-                        )
-                    } else null
-                )
+        // Convert inline comments to PrComment objects
+        val inlineCommentsList = snapshot.inlineComments.map { comment ->
+            PrComment(
+                id = comment.id,
+                author = comment.user ?: "unknown",
+                body = comment.body ?: "",
+                filePath = comment.path,
+                line = comment.line,
+                status = PrCommentStatus.OPEN,
+                codeSnippet = if (comment.snippet != null) {
+                    com.intellij.ml.llm.template.models.CodeSnippet(
+                        text = comment.snippet,
+                        startLine = comment.startLine,
+                        endLine = comment.line
+                    )
+                } else null
             )
         }
+
+        // Group inline comments by their code snippet text, then sort by file path and line
+        val groupedInlineComments = inlineCommentsList
+            .sortedWith(compareBy(
+                { it.filePath ?: "" },
+                { it.codeSnippet?.text ?: "" },
+                { it.line ?: Int.MAX_VALUE }
+            ))
+
+        // Add grouped inline comments
+        allComments.addAll(groupedInlineComments)
 
         // Apply initial filter
         applyFilter()
