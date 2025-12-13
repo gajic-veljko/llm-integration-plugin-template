@@ -356,12 +356,27 @@ class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
         }
 
         // Group inline comments by their code snippet text, then sort by file path and line
-        val groupedInlineComments = inlineCommentsList
+        val sortedInlineComments = inlineCommentsList
             .sortedWith(compareBy(
                 { it.filePath ?: "" },
                 { it.codeSnippet?.text ?: "" },
                 { it.line ?: Int.MAX_VALUE }
             ))
+
+        // Add visual grouping indicator by prepending "  ↳ " to comments with same snippet
+        var previousSnippet: String? = null
+        val groupedInlineComments = sortedInlineComments.map { comment ->
+            val currentSnippet = comment.codeSnippet?.text
+            val isGrouped = currentSnippet != null && currentSnippet == previousSnippet
+            previousSnippet = currentSnippet
+
+            if (isGrouped && currentSnippet?.isNotEmpty() == true) {
+                // Add indent prefix for grouped comments
+                comment.copy(author = "  ↳ ${comment.author}")
+            } else {
+                comment
+            }
+        }
 
         // Add grouped inline comments
         allComments.addAll(groupedInlineComments)
