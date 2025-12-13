@@ -171,11 +171,24 @@ class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
 
         commentsList.cellRenderer = object : ColoredListCellRenderer<PrComment>() {
             override fun customizeCellRenderer(list: JList<out PrComment>, value: PrComment, index: Int, selected: Boolean, hasFocus: Boolean) {
-                border = JBUI.Borders.empty(8, 4)
-                icon = if (value.filePath != null) AllIcons.Nodes.Folder else AllIcons.Toolwindows.ToolWindowMessages
+                // Apply indentation for grouped comments
+                val leftPadding = if (value.isGrouped) 32 else 4
+                border = JBUI.Borders.empty(8, leftPadding, 8, 4)
+
+                // Show icon only for first comment in group (non-grouped)
+                icon = if (!value.isGrouped) {
+                    if (value.filePath != null) AllIcons.Nodes.Folder else AllIcons.Toolwindows.ToolWindowMessages
+                } else {
+                    null
+                }
 
                 val badgeText = if (value.filePath != null) "INLINE" else "DISCUSSION"
                 val badgeColor = if (value.filePath != null) PrUiTheme.INLINE_BADGE_COLOR else PrUiTheme.DISCUSSION_BADGE_COLOR
+
+                // Add visual indicator for grouped comments
+                if (value.isGrouped) {
+                    append("└─ ", SimpleTextAttributes(SimpleTextAttributes.STYLE_PLAIN, JBColor.GRAY))
+                }
 
                 append("[$badgeText] ", SimpleTextAttributes(SimpleTextAttributes.STYLE_BOLD, badgeColor))
                 append("@${value.author}", SimpleTextAttributes(SimpleTextAttributes.STYLE_BOLD, PrUiTheme.AUTHOR_COLOR))
@@ -429,30 +442,77 @@ class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
     private fun loadCommentsFromSnapshot(snapshot: PrSnapshot) {
         allComments.clear()
 
-        snapshot.discussionComments.forEach { c ->
-            allComments.add(PrComment(c.id, c.user ?: "unknown", c.body ?: "", null, null, PrCommentStatus.OPEN))
-        }
-        snapshot.inlineComments.forEach { c ->
+        // Add discussion comments first
+        snapshot.discussionComments.forEach { comment ->
             allComments.add(
                 PrComment(
-                    id = c.id,
-                    author = c.user ?: "unknown",
-                    body = c.body ?: "",
-                    filePath = c.path,
-                    line = c.line,
-                    status = PrCommentStatus.OPEN,
-                    codeSnippet = if (c.snippet != null)
-                        com.intellij.ml.llm.template.models.CodeSnippet(
-                            c.snippet,
-                            c.startLine?.toString(),
-                            c.line
-                        )
-                    else null
+                    id = comment.id,
+                    author = comment.user ?: "unknown",
+                    body = comment.body ?: "",
+                    filePath = null,
+                    line = null,
+                    status = PrCommentStatus.OPEN
                 )
             )
         }
+
+        // Convert inline comments to PrComment objects
+        val inlineCommentsList = snapshot.inlineComments.map { comment ->
+            PrComment(
+                id = comment.id,
+                author = comment.user ?: "unknown",
+                body = comment.body ?: "",
+                filePath = comment.path,
+                line = comment.line,
+                status = PrCommentStatus.OPEN,
+                codeSnippet = if (comment.snippet != null) {
+                    com.intellij.ml.llm.template.models.CodeSnippet(
+                        text = comment.snippet,
+                        startLine = comment.startLine,
+                        endLine = comment.line
+                    )
+                } else null
+            )
+        }
+
+        // SAME APPROACH: sort so equal snippets are adjacent, then use previousSnippet scan.
+        fun normalizeSnippet(s: String?): String {
+            // keeps your "string compare" approach but avoids false negatives due to whitespace/newlines
+            return s
+                ?.trim()
+                ?.replace(Regex("\\s+"), " ")
+                ?: ""
+        }
+
+        // Keep your sort style (filePath -> snippet -> line), but use normalized snippet for stability
+        val sortedInlineComments = inlineCommentsList.sortedWith(
+            compareBy<PrComment>(
+                { it.filePath ?: "" },
+                { normalizeSnippet(it.codeSnippet?.text) },
+                { it.line ?: Int.MAX_VALUE }
+            )
+        )
+
+        var previousSnippetKey: String? = null
+
+        val groupedInlineComments = sortedInlineComments.map { comment ->
+            val currentSnippetKey = normalizeSnippet(comment.codeSnippet?.text)
+
+            val isGrouped =
+                currentSnippetKey.isNotEmpty() &&
+                        currentSnippetKey == previousSnippetKey
+
+            previousSnippetKey = if (currentSnippetKey.isNotEmpty()) currentSnippetKey else null
+
+            comment.copy(isGrouped = isGrouped)
+        }
+
+        allComments.addAll(groupedInlineComments)
+
         applyFilter()
     }
+
+
 
     private fun applyFilter() {
         listModel.removeAll()

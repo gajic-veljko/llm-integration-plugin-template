@@ -24,10 +24,11 @@ data class PrComment(
     // novo
     val status: PrCommentStatus = PrCommentStatus.OPEN,
     val codeSnippet: CodeSnippet? = null,
+    val isGrouped: Boolean = false,
 ) {
     override fun toString(): String {
-        val loc = if (filePath != null && line != null) " • $filePath:$line" else ""
-        val st = " • ${status.name.lowercase()}"
-        return "#$id • $author$loc$st"
+//        val loc = if (filePath != null && line != null) " • $filePath:$line" else ""
+//        val st = " • ${status.name.lowercase()}"
+        return author
     }
 }
