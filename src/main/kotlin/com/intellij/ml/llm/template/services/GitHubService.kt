@@ -74,7 +74,8 @@ data class InlineReviewComment(
     val commitId: String?,
     val diffHunk: String?,
     val snippet: String?,    // highlighted snippet (if we could fetch file)
-    val snippetError: String?
+    val snippetError: String?,
+    val createdAt: String?   // timestamp
 )
 
 // -----------------------------
@@ -234,6 +235,7 @@ class GitHubService(
             commitId = commitId,
             diffHunk = m["diff_hunk"] as? String,
             snippet = snippet,
+            createdAt = m["created_at"] as? String,
             snippetError = snippetError
         )
     }
