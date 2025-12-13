@@ -10,6 +10,7 @@ import com.intellij.openapi.components.service
 
 private const val OPEN_AI_KEY = "OPENAI_API_KEY"
 private const val OPENAI_ORGANIZATION = "OPENAI_ORGANIZATION"
+private const val GITHUB_TOKEN = "GITHUB_TOKEN"
 
 @Service(Service.Level.APP)
 class CredentialsHolder {

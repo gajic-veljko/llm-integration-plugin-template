@@ -105,6 +105,8 @@ class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
                     appendLine("Author: ${selected.author}")
                     if (selected.filePath != null && selected.line != null) {
                         appendLine("Location: ${selected.filePath}:${selected.line}")
+                    } else {
+                        appendLine("Type: Discussion Comment")
                     }
                     appendLine()
                     appendLine("Comment:")
@@ -119,8 +121,15 @@ class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
                         appendLine(selected.codeSnippet.text)
                         appendLine("=".repeat(60))
                     }
+
+                    // Show note for discussion comments
+                    if (selected.filePath == null) {
+                        appendLine()
+                        appendLine("Note: AI resolution is only available for inline review comments with code context.")
+                    }
                 }
-                resolveButton.isEnabled = true
+                // Enable resolve button only for inline comments (those with filePath)
+                resolveButton.isEnabled = selected.filePath != null
                 previewButton.isEnabled = true
             }
         }
@@ -198,6 +207,12 @@ class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
             val selectedComment = commentsList.selectedValue
             if (selectedComment == null) {
                 JOptionPane.showMessageDialog(this, "Please select a comment", "Error", JOptionPane.ERROR_MESSAGE)
+                return@addActionListener
+            }
+
+            // Double-check it's an inline comment (button should already be disabled for discussion comments)
+            if (selectedComment.filePath == null) {
+                JOptionPane.showMessageDialog(this, "AI resolution is only available for inline review comments", "Error", JOptionPane.ERROR_MESSAGE)
                 return@addActionListener
             }
 
