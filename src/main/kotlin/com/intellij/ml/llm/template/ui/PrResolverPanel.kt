@@ -17,10 +17,23 @@ import com.intellij.ui.SimpleTextAttributes
 import com.intellij.ui.components.*
 import java.awt.BorderLayout
 import java.awt.FlowLayout
+import javax.swing.*
 import javax.swing.JButton
 import javax.swing.JOptionPane
 import javax.swing.JPanel
 import javax.swing.ListSelectionModel
+
+enum class CommentFilter {
+    ALL {
+        override fun toString() = "All Comments"
+    },
+    INLINE {
+        override fun toString() = "Inline Comments"
+    },
+    DISCUSSION {
+        override fun toString() = "Discussion Comments"
+    }
+}
 
 class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
 
@@ -31,9 +44,13 @@ class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
     private val fetchButton = JButton("Fetch comments")
     private val resolveButton = JButton("Resolve selected")
     private val previewButton = JButton("Preview diff")
+    private val filterComboBox = JComboBox(CommentFilter.values())
 
     private val listModel = CollectionListModel<PrComment>()
     private val commentsList = JBList(listModel)
+
+    // Store all comments for filtering
+    private var allComments = mutableListOf<PrComment>()
 
     private val detailsArea = JBTextArea().apply {
         isEditable = false
@@ -57,6 +74,13 @@ class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
             add(prField)
 
             add(fetchButton)
+
+            // Add separator
+            add(JSeparator(SwingConstants.VERTICAL))
+
+            add(JBLabel("Filter:"))
+            add(filterComboBox)
+
             add(resolveButton)
             add(previewButton)
         }
@@ -132,6 +156,11 @@ class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
                 resolveButton.isEnabled = selected.filePath != null
                 previewButton.isEnabled = true
             }
+        }
+
+        // Event: filter combo box change
+        filterComboBox.addActionListener {
+            applyFilter()
         }
 
         // Za sada: dummy data (da UI radi odmah)
@@ -291,11 +320,11 @@ class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
     }
 
     private fun loadCommentsFromSnapshot(snapshot: PrSnapshot) {
-        listModel.removeAll()
+        allComments.clear()
 
         // Add discussion comments
         snapshot.discussionComments.forEach { comment ->
-            listModel.add(
+            allComments.add(
                 PrComment(
                     id = comment.id,
                     author = comment.user ?: "unknown",
@@ -309,7 +338,7 @@ class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
 
         // Add inline review comments
         snapshot.inlineComments.forEach { comment ->
-            listModel.add(
+            allComments.add(
                 PrComment(
                     id = comment.id,
                     author = comment.user ?: "unknown",
@@ -328,9 +357,28 @@ class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
             )
         }
 
+        // Apply initial filter
+        applyFilter()
+    }
+
+    private fun applyFilter() {
+        listModel.removeAll()
+
+        val filter = filterComboBox.selectedItem as? CommentFilter ?: CommentFilter.ALL
+
+        val filteredComments = when (filter) {
+            CommentFilter.ALL -> allComments
+            CommentFilter.INLINE -> allComments.filter { it.filePath != null }
+            CommentFilter.DISCUSSION -> allComments.filter { it.filePath == null }
+        }
+
+        filteredComments.forEach { listModel.add(it) }
+
         // Select first item if available
         if (!listModel.isEmpty) {
             commentsList.setSelectedIndex(0)
+        } else {
+            detailsArea.text = "No comments match the selected filter."
         }
     }
 
