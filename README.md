@@ -1,6 +1,6 @@
 # PR Comment Resolver - IntelliJ Plugin
 
-An intelligent IntelliJ IDEA plugin that helps developers resolve GitHub PR review comments using AI assistance. Fetch comments from GitHub, view them with full context, and get AI-powered suggestions for fixes.
+Intelligent IntelliJ IDEA plugin that helps developers resolve GitHub PR review comments using AI assistance. Fetch comments from GitHub, view them with full context, and get AI-powered suggestions for fixes.
 
 ---
 
