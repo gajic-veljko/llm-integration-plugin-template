@@ -24,6 +24,7 @@ import com.intellij.ui.EditorTextField
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import java.awt.*
+import javax.swing.Timer
 import javax.swing.*
 import javax.swing.border.CompoundBorder
 
@@ -230,6 +231,9 @@ class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
         detailsPanel.add(normalScroll, "NORMAL")
         detailsPanel.add(expandedScroll, "EXPANDED")
         (detailsPanel.layout as CardLayout).show(detailsPanel, "NORMAL")
+
+        // Hide all sections initially
+        hideAllSections()
     }
 
     private fun setupCommentsList() {
@@ -296,11 +300,11 @@ class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
         saveButton.addActionListener { saveCommentEdit() }
         cancelButton.addActionListener { cancelCommentEdit() }
 
-        copyCodeContextButton.addActionListener { copyToClipboard(currentCodeContext, "Code context") }
-        copyAiCodeButton.addActionListener { copyToClipboard(currentAiCode, "AI proposed code") }
+        copyCodeContextButton.addActionListener { copyToClipboard(currentCodeContext, copyCodeContextButton) }
+        copyAiCodeButton.addActionListener { copyToClipboard(currentAiCode, copyAiCodeButton) }
     }
 
-    private fun copyToClipboard(text: String?, label: String) {
+    private fun copyToClipboard(text: String?, button: JButton) {
         if (text.isNullOrBlank()) {
             showError("No code to copy")
             return
@@ -313,13 +317,20 @@ class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
             val clipboard = java.awt.Toolkit.getDefaultToolkit().systemClipboard
             clipboard.setContents(java.awt.datatransfer.StringSelection(cleanedText), null)
 
-            // Show success feedback
-            JOptionPane.showMessageDialog(
-                this,
-                "$label copied to clipboard!",
-                "Success",
-                JOptionPane.INFORMATION_MESSAGE
-            )
+            // Change button text and icon to "Copied" with double check
+            val originalText = button.text
+            val originalIcon = button.icon
+            button.text = "Copied"
+            button.icon = AllIcons.Actions.Checked
+
+            // Reset button text and icon after 2 seconds
+            Timer(2000) {
+                button.text = originalText
+                button.icon = originalIcon
+            }.apply {
+                isRepeats = false
+                start()
+            }
         } catch (e: Exception) {
             logger.error("Failed to copy to clipboard", e)
             showError("Failed to copy: ${e.message}")
@@ -431,14 +442,23 @@ class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
         expandedOriginalIndex = -1
     }
 
+    private fun hideAllSections() {
+        commentSection.isVisible = false
+        codeSection.isVisible = false
+        aiTextSection.isVisible = false
+        aiCodeSection.isVisible = false
+    }
+
     private fun clearDetails() {
         commentBodyArea.text = ""
         setCodeContext(null, null, null)
-        hideAi()
+        hideAllSections()
         resolveButton.isEnabled = false
     }
 
     private fun showCommentDetails(comment: PrComment) {
+        // Always show comment section
+        commentSection.isVisible = true
         commentBodyArea.text = comment.body
 
         if (comment.filePath == null) {
