@@ -187,7 +187,7 @@ class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
         expandedScroll.border = JBUI.Borders.empty()
         expandedScroll.horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
 
-        // Sections
+        // Build all the sections
         commentSection = SectionWithExpand("Comment", AllIcons.Nodes.Tag) { toggleExpand(commentSection) }.apply { setFixedHeight(190) }
         commentSection.contentPanel.border = JBUI.Borders.customLine(PrUiTheme.CARD_BORDER, 1)
         commentSection.contentPanel.add(commentScroll, BorderLayout.CENTER)
@@ -244,11 +244,11 @@ class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
 
         commentsList.cellRenderer = object : ColoredListCellRenderer<PrComment>() {
             override fun customizeCellRenderer(list: JList<out PrComment>, value: PrComment, index: Int, selected: Boolean, hasFocus: Boolean) {
-                // Apply indentation for grouped comments
+                // Indent grouped comments visually
                 val leftPadding = if (value.isGrouped) 32 else 4
                 border = JBUI.Borders.empty(8, leftPadding, 8, 4)
 
-                // Show icon only for first comment in group (non-grouped)
+                // Show icon only for first comment in group
                 icon = if (!value.isGrouped) {
                     if (value.filePath != null) AllIcons.Nodes.Folder else AllIcons.Toolwindows.ToolWindowMessages
                 } else {
@@ -311,19 +311,19 @@ class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
         }
 
         try {
-            // Strip line numbers from the code before copying
+            // Strip out line numbers before copying
             val cleanedText = stripLineNumbers(text)
 
             val clipboard = java.awt.Toolkit.getDefaultToolkit().systemClipboard
             clipboard.setContents(java.awt.datatransfer.StringSelection(cleanedText), null)
 
-            // Change button text and icon to "Copied" with double check
+            // Quick visual feedback - change button to show "Copied"
             val originalText = button.text
             val originalIcon = button.icon
             button.text = "Copied"
             button.icon = AllIcons.Actions.Checked
 
-            // Reset button text and icon after 2 seconds
+            // Reset after 2 seconds
             Timer(2000) {
                 button.text = originalText
                 button.icon = originalIcon
@@ -338,10 +338,8 @@ class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
     }
 
     private fun stripLineNumbers(code: String): String {
-        // Pattern matches line numbers with format: "   12345 | " or ">>  12345 | "
-        // The pattern is: optional ">>" or spaces, followed by digits, followed by " | "
+        // Remove line number prefixes like "   12 | " or ">>  12 | "
         return code.lines().joinToString("\n") { line ->
-            // Remove line number prefix: "   12 | " or ">>  12 | "
             line.replace(Regex("^(>>)?\\s*\\d+\\s*\\|\\s?"), "")
         }
     }
@@ -358,7 +356,7 @@ class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
         cancelButton.isVisible = true
         isEditingComment = true
 
-        // Keep resolve button enabled so users can send edited text directly
+        // Keep resolve button enabled so user can send edited text directly
         val selected = commentsList.selectedValue
         resolveButton.isEnabled = selected?.filePath != null
     }
@@ -422,7 +420,7 @@ class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
 
         expandedWrapper.remove(section)
 
-        // restore fixed heights
+        // Restore original heights
         when (section) {
             commentSection -> section.setFixedHeight(190)
             codeSection -> section.setFixedHeight(260)
@@ -457,25 +455,25 @@ class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
     }
 
     private fun showCommentDetails(comment: PrComment) {
-        // Always show comment section
+        // Always show the comment
         commentSection.isVisible = true
         commentBodyArea.text = comment.body
 
         if (comment.filePath == null) {
-            // discussion: hide code + hide AI and disable resolve
+            // It's a discussion comment, so hide code section and disable resolve
             codeSection.isVisible = false
             hideAi()
             resolveButton.isEnabled = false
             return
         }
 
-        // inline
+        // It's an inline comment - show code if we have it
         codeSection.isVisible = true
         if (comment.codeSnippet != null) {
             setCodeContext(comment.codeSnippet.text, comment.filePath, "Lines ${comment.codeSnippet.startLine} - ${comment.codeSnippet.endLine}")
         } else setCodeContext(null, null, null)
 
-        hideAi() // AI only after resolve
+        hideAi() // AI results only show after clicking resolve
         resolveButton.isEnabled = true
     }
 
@@ -530,7 +528,7 @@ class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
             aiCodeEditorField = ed
             p.add(ed, BorderLayout.CENTER)
 
-            // Add copy button at the bottom
+            // Add copy button at bottom
             val buttonPanel = JPanel(FlowLayout(FlowLayout.RIGHT, 4, 4)).apply {
                 background = UIUtil.getPanelBackground()
                 border = JBUI.Borders.customLine(PrUiTheme.CARD_BORDER, 1, 0, 0, 0)
@@ -699,19 +697,90 @@ class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
         val startLine = codeSnippet?.startLine ?: selected.line
         val endLine = codeSnippet?.endLine ?: selected.line
 
-
         val popup = LoadingPopup(this)
-        popup.show("Analyzing with OpenAI...")
+        popup.show("Reading file and analyzing with OpenAI...")
         fetchButton.isEnabled = false
         resolveButton.isEnabled = false
 
         ProgressManager.getInstance().run(object : Task.Backgroundable(project, "Analyzing with AI", true) {
             override fun run(indicator: ProgressIndicator) {
                 try {
-                    val analysis = OpenAiService(key).analyzePrSnapshot(
-                        snapshot = snapshot,
-                        model = "gpt-4o",
-                        userPrompt = """
+                    indicator.text = "Reading local file content..."
+
+                    // Try to fetch the file content locally only (no GitHub fallback to save tokens)
+                    val fullFileContent = fetchFileContent(selected.filePath!!)
+
+                    indicator.text = "Analyzing with OpenAI..."
+
+                    val prompt = if (fullFileContent != null) {
+                        val lineCount = fullFileContent.lines().size
+                        logger.info("✅ SUCCESS: Full file context loaded!")
+                        logger.info("  📄 File: ${selected.filePath}")
+                        logger.info("  📊 Size: ${fullFileContent.length} characters")
+                        logger.info("  📝 Lines: $lineCount")
+                        logger.info("  🎯 Target lines: $startLine-$endLine")
+                        logger.info("  💰 Token estimate: ~${fullFileContent.length / 4} tokens")
+                        println("═══════════════════════════════════════════════════════")
+                        println("✅ FULL FILE CONTEXT ADDED TO AI PROMPT")
+                        println("═══════════════════════════════════════════════════════")
+                        println("📄 File: ${selected.filePath}")
+                        println("📊 File size: ${fullFileContent.length} characters ($lineCount lines)")
+                        println("🎯 Target lines to modify: $startLine-$endLine")
+                        println("💰 Estimated tokens: ~${fullFileContent.length / 4}")
+                        println("═══════════════════════════════════════════════════════")
+                        """
+                            You are helping to resolve a code review comment.
+                            
+                            FILE: ${selected.filePath}
+                            LINES TO FOCUS ON: $startLine-$endLine
+                            COMMENT: $commentText
+                            
+                            FULL FILE CONTENT (for context):
+                            ```
+                            $fullFileContent
+                            ```
+                            
+                            TARGET CODE TO MODIFY (lines $startLine-$endLine):
+                            ```
+                            $targetCode
+                            ```
+                            
+                            CRITICAL INSTRUCTIONS:
+                            - You have the FULL FILE CONTENT above for complete context
+                            - FOCUS on resolving the comment for lines $startLine-$endLine ONLY
+                            - Your solution should ONLY modify lines $startLine-$endLine
+                            - Use the full file to understand imports, class structure, dependencies, etc.
+                            - DO NOT modify any other lines outside the target range
+                            
+                            Provide your response in EXACTLY this format:
+                            
+                            1. Brief explanation of what needs to be changed in lines $startLine-$endLine
+                            
+                            2. **OLD CODE** (lines $startLine-$endLine):
+                            ```java
+                            $targetCode
+                            ```
+                            
+                            3. **NEW CODE** (lines $startLine-$endLine only):
+                            ```java
+                            // your proposed solution here
+                            ```
+                            
+                            Remember: Your NEW CODE must ONLY contain the refactored version of lines $startLine-$endLine. Nothing else.
+                        """.trimIndent()
+                    } else {
+                        logger.warn("⚠️ File not found locally - using snippet-only context")
+                        logger.info("  📄 File: ${selected.filePath}")
+                        logger.info("  📊 Snippet size: ${targetCode.length} characters")
+                        logger.info("  💰 Token savings: Using only snippet instead of full file")
+                        println("═══════════════════════════════════════════════════════")
+                        println("⚠️ FILE NOT FOUND LOCALLY - SNIPPET-ONLY MODE")
+                        println("═══════════════════════════════════════════════════════")
+                        println("📄 File: ${selected.filePath}")
+                        println("📊 Snippet size: ${targetCode.length} characters")
+                        println("💰 Saving tokens by not fetching from GitHub")
+                        println("═══════════════════════════════════════════════════════")
+                        """
                             You are helping to resolve a code review comment.
                             
                             FILE: ${selected.filePath}
@@ -723,12 +792,12 @@ class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
                             $targetCode
                             ```
                             
+                            Note: Full file context not available. Work with the provided code snippet.
+                            
                             CRITICAL INSTRUCTIONS:
                             - ONLY modify the code shown in "TARGET CODE TO MODIFY" section above (lines $startLine-$endLine)
                             - DO NOT modify any other lines outside this range
-                            - DO NOT add or remove methods outside the target lines
                             - Keep your solution focused ONLY on the specified lines
-                            - If the comment mentions other parts of the file, IGNORE them - only fix lines $startLine-$endLine
                             
                             Provide your response in EXACTLY this format:
                             
@@ -746,6 +815,12 @@ class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
                             
                             Remember: Your NEW CODE must ONLY contain the refactored version of lines $startLine-$endLine. Nothing else.
                         """.trimIndent()
+                    }
+
+                    val analysis = OpenAiService(key).analyzePrSnapshot(
+                        snapshot = snapshot,
+                        model = "gpt-4o",
+                        userPrompt = prompt
                     )
                     ApplicationManager.getApplication().invokeLater {
                         logger.info("AI Response received, length: ${analysis.length}")
@@ -774,6 +849,38 @@ class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
 
     private fun showError(msg: String) {
         JOptionPane.showMessageDialog(this, msg, "Error", JOptionPane.ERROR_MESSAGE)
+    }
+
+    // Try to grab the file from the local project, returns null if not found
+    private fun fetchFileContent(filePath: String): String? {
+        try {
+            val projectBasePath = project.basePath
+            if (projectBasePath != null) {
+                val localFile = java.io.File(projectBasePath, filePath)
+                if (localFile.exists() && localFile.isFile) {
+                    logger.info("Found file locally: ${localFile.absolutePath}")
+                    return localFile.readText()
+                }
+            }
+
+            // Try IntelliJ's VFS as backup
+            val baseDir = com.intellij.openapi.vfs.LocalFileSystem.getInstance()
+                .findFileByPath(projectBasePath ?: return null)
+
+            if (baseDir != null) {
+                val vFile = baseDir.findFileByRelativePath(filePath)
+                if (vFile != null && !vFile.isDirectory) {
+                    logger.info("Found file via VFS: ${vFile.path}")
+                    return String(vFile.contentsToByteArray(), Charsets.UTF_8)
+                }
+            }
+
+            logger.warn("File not found locally: $filePath")
+            return null
+        } catch (e: Exception) {
+            logger.error("Failed to read local file: $filePath", e)
+            return null
+        }
     }
 
     private fun loadCommentsFromSnapshot(snapshot: PrSnapshot) {
@@ -817,16 +924,15 @@ class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
             )
         }
 
-        // SAME APPROACH: sort so equal snippets are adjacent, then use previousSnippet scan.
+        // Normalize snippets so whitespace doesn't mess up grouping
         fun normalizeSnippet(s: String?): String {
-            // keeps your "string compare" approach but avoids false negatives due to whitespace/newlines
             return s
                 ?.trim()
                 ?.replace(Regex("\\s+"), " ")
                 ?: ""
         }
 
-        // Keep your sort style (filePath -> snippet -> line), but use normalized snippet for stability
+        // Sort by file, then snippet, then line number
         val sortedInlineComments = inlineCommentsList.sortedWith(
             compareBy<PrComment>(
                 { it.filePath ?: "" },
@@ -835,16 +941,18 @@ class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
             )
         )
 
-        var previousSnippetKey: String? = null
+        var previousGroupKey: Pair<String?, String?> = null to null
 
+        // Mark comments as grouped if they share the same file AND code snippet
         val groupedInlineComments = sortedInlineComments.map { comment ->
             val currentSnippetKey = normalizeSnippet(comment.codeSnippet?.text)
+            val currentGroupKey = comment.filePath to currentSnippetKey
 
             val isGrouped =
                 currentSnippetKey.isNotEmpty() &&
-                        currentSnippetKey == previousSnippetKey
+                        currentGroupKey == previousGroupKey
 
-            previousSnippetKey = if (currentSnippetKey.isNotEmpty()) currentSnippetKey else null
+            previousGroupKey = if (currentSnippetKey.isNotEmpty()) currentGroupKey else (null to null)
 
             comment.copy(isGrouped = isGrouped)
         }
@@ -854,8 +962,6 @@ class PrResolverPanel(private val project: Project) : JPanel(BorderLayout()) {
 
         applyFilter()
     }
-
-
 
     private fun applyFilter() {
         listModel.removeAll()

@@ -13,9 +13,7 @@ import java.nio.charset.StandardCharsets
 import java.time.Duration
 import java.util.Base64
 
-// -----------------------------
-// Data model (object you send to OpenAI)
-// -----------------------------
+// Data models for PR information
 data class PrSnapshot(
     val repo: String,
     val pr: PrInfo,
@@ -78,9 +76,8 @@ data class InlineReviewComment(
     val createdAt: String?   // timestamp
 )
 
-// -----------------------------
-// GitHub fetcher
-// -----------------------------
+
+// GitHub API service for fetching PR data
 class GitHubService(
     private val githubToken: String? = null,
     private val apiBase: String = "https://api.github.com",
@@ -92,7 +89,7 @@ class GitHubService(
 
     private val gson = Gson()
 
-    /** Main function you call on "Fetch" button */
+    // Fetches complete PR snapshot including comments and reviews
     fun fetchPrSnapshot(owner: String, repo: String, prNumber: Int, snippetContextLines: Int = 3): PrSnapshot {
         val prDetail = getMap("/repos/${enc(owner)}/${enc(repo)}/pulls/$prNumber")
 
@@ -130,14 +127,14 @@ class GitHubService(
         )
     }
 
-    // ---------- GitHub calls ----------
+    // GitHub API helper methods
 
     private fun getMap(path: String): Map<String, Any?> {
         val json = getJson(path)
         return gson.fromJson(json, object : TypeToken<Map<String, Any?>>() {}.type)
     }
 
-    /** Paginates until empty */
+    // Paginates through all results
     private fun listAll(path: String, perPage: Int = 100): List<Map<String, Any?>> {
         val out = mutableListOf<Map<String, Any?>>()
         var page = 1
@@ -163,7 +160,7 @@ class GitHubService(
             .timeout(Duration.ofSeconds(40))
             .GET()
 
-        // headers for GitHub API JSON
+        // Set GitHub API headers
         if (url.startsWith(apiBase)) {
             reqBuilder.header("Accept", "application/vnd.github+json")
             reqBuilder.header("X-GitHub-Api-Version", "2022-11-28")
@@ -182,7 +179,7 @@ class GitHubService(
         return res.body()
     }
 
-    // ---------- Comment mapping + snippets ----------
+    // Convert GitHub API responses to our comment models
 
     private fun toIssueComment(m: Map<String, Any?>): IssueComment {
         val user = (m["user"] as? Map<*, *>)?.get("login") as? String
@@ -240,7 +237,7 @@ class GitHubService(
         )
     }
 
-    private fun fetchFileAtCommit(owner: String, repo: String, path: String, commitSha: String): String {
+    fun fetchFileAtCommit(owner: String, repo: String, path: String, commitSha: String): String {
         // 1) Contents API (base64 JSON)
         val contentsJson = try {
             getJson("/repos/${enc(owner)}/${enc(repo)}/contents/${pathEncode(path)}?ref=${enc(commitSha)}")
@@ -283,12 +280,12 @@ class GitHubService(
         return sb.toString()
     }
 
-    // ---------- Reviews -> summary ----------
+    // Compute overall review status from individual reviews
 
     private fun computeReviewSummary(reviews: List<Map<String, Any?>>): ReviewSummary {
         if (reviews.isEmpty()) return ReviewSummary("NO_REVIEWS", emptyList())
 
-        // latest review per user by submitted_at (ISO string compare works)
+        // Get latest review per user by timestamp
         val latestByUser = linkedMapOf<String, Map<String, Any?>>()
 
         fun isAfter(a: Map<String, Any?>, b: Map<String, Any?>): Boolean {
@@ -336,7 +333,7 @@ class GitHubService(
         return ReviewSummary(overall, perUser)
     }
 
-    // ---------- encoding helpers ----------
+    // URL encoding helpers
     private fun enc(s: String) = URLEncoder.encode(s, StandardCharsets.UTF_8)
 
     private fun pathEncode(path: String): String =

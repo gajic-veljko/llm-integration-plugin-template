@@ -8,9 +8,7 @@ import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.time.Duration
 
-// -----------------------------
-// OpenAI caller (Responses API)
-// -----------------------------
+// OpenAI API service for PR analysis
 class OpenAiService(
     private val openAiApiKey: String,
     private val baseUrl: String = "https://api.openai.com/v1"
@@ -21,10 +19,7 @@ class OpenAiService(
 
     private val gson = Gson()
 
-    /**
-     * Call this on your "Analyze" button.
-     * You pass in the snapshot from GitHubService + any user prompt.
-     */
+    // Sends PR snapshot to OpenAI and gets analysis back
     fun analyzePrSnapshot(
         snapshot: PrSnapshot,
         model: String = "gpt-4o",
@@ -77,9 +72,7 @@ class OpenAiService(
         return extractChatCompletionText(root) ?: res.body()
     }
 
-    /**
-     * Extracts text from Chat Completions API response.
-     */
+    // Pull out the actual text response from OpenAI's JSON
     private fun extractChatCompletionText(root: Map<String, Any?>): String? {
         val choices = root["choices"] as? List<*> ?: return null
         if (choices.isEmpty()) return null

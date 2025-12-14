@@ -21,15 +21,12 @@ data class PrComment(
     val filePath: String? = null,
     val line: Int? = null,
 
-    // novo
     val status: PrCommentStatus = PrCommentStatus.OPEN,
     val codeSnippet: CodeSnippet? = null,
     val isGrouped: Boolean = false,
     val createdAt: String? = null,
 ) {
     override fun toString(): String {
-//        val loc = if (filePath != null && line != null) " • $filePath:$line" else ""
-//        val st = " • ${status.name.lowercase()}"
         return author
     }
 }
